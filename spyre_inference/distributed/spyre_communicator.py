@@ -26,6 +26,8 @@ path alongside the compiled one.
 
 from __future__ import annotations
 
+import os
+
 import torch
 import torch.distributed as dist
 from vllm.distributed.device_communicators.base_device_communicator import (
@@ -50,6 +52,14 @@ class SpyreCommunicator(DeviceCommunicatorBase):
             return input_
         if input_.device.type == "cpu" or self._group_name is None:
             return super().all_reduce(input_)
+
+        # Gloo CPU fallback for uncompiled eager execution or when SPYRE_USE_GLOO_ALLREDUCE is set
+        # (required for cross-card VF allocations on OpenShift):
+        use_gloo = os.getenv("SPYRE_USE_GLOO_ALLREDUCE", "0").lower() in ("1", "true", "yes")
+        if use_gloo or not torch.compiler.is_compiling():
+            orig_device = input_.device
+            out = super().all_reduce(input_.to("cpu"))
+            return out.to(orig_device)
 
         # libspyre_comms only supports 1-D all_reduce: rank-2 [3, 4096] aborts in
         # SplitEnvelope (spyre-comms#463), and deeptools' L3 scheduler fails some rank-3
